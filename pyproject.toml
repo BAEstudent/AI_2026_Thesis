@@ -3,10 +3,20 @@ name = "ai-2026-thesis"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12, <3.14"
 dependencies = [
+    "airflow-clickhouse-plugin>=1.6.0",
+    "apache-airflow-providers-amazon>=9.24.0",
+    "apache-airflow-providers-openlineage>=2.13.0",
+    "apache-airflow-providers-postgres>=6.6.2",
+    "apache-airflow[celery]>=3.1.8",
+    "clickhouse-connect>=0.15.1",
     "ipykernel>=7.2.0",
     "numpy>=2.4.3",
     "pandas>=3.0.1",
+    "pyarrow>=23.0.1",
     "scikit-learn>=1.8.0",
+    "sentence-transformers>=5.3.0",
+    "torch>=2.11.0",
+    "transformers>=5.5.0",
 ]

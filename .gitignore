@@ -208,3 +208,15 @@ __marimo__/
 
 # Data
 data/
+
+# Airflow
+logs/
+
+# Postgres
+postgres_data/
+
+# Minio
+minio_data/
+
+# Notebooks
+*.ipynb
