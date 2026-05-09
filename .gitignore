@@ -218,5 +218,7 @@ postgres_data/
 # Minio
 minio_data/
 
+models/
+
 # Notebooks
 *.ipynb

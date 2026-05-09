@@ -1,10 +1,11 @@
 from airflow import DAG
-from airflow.providers.standard.operators.python import PythonOperator
+from airflow.operators.python import PythonOperator
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from datetime import datetime
 from sqlalchemy import Text, Date, TIMESTAMP
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY, BIGINT, DOUBLE_PRECISION
+from sqlalchemy import create_engine
 import pandas as pd
 import pyarrow.parquet as pq
 import json
@@ -24,36 +25,51 @@ default_args = {
 }
 
 
-def _read_latest_parquet(table_name: str) -> tuple[pq.ParquetFile, str]:
-    """Возвращает PyArrow ParquetFile (для батч-чтения) и имя файла"""
+def _get_loaded_files(table_name):
+    """Возвращает множество уже загруженных source_file для таблицы."""
+    pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+    records = pg_hook.get_records(
+        f"SELECT DISTINCT source_file FROM {SCHEMA_NAME}.{table_name} WHERE source_file IS NOT NULL"
+    )
+    return {r[0] for r in records}
+
+
+def _get_pending_files(table_name):
+    """
+    Возвращает список (s3_key, file_name) файлов, которые ещё не загружены в Postgres.
+    Отсортированы по времени модификации (от старых к новым).
+    """
     s3_hook = S3Hook(aws_conn_id=MINIO_CONN_ID)
     prefix = f"{table_name}/"
 
-    keys = s3_hook.list_keys(bucket_name=BUCKET_NAME, prefix=prefix)
-    if not keys:
-        raise FileNotFoundError(f"Нет файлов по пути s3://{BUCKET_NAME}/{prefix}")
-
     s3_client = s3_hook.get_conn()
-    objects = s3_client.list_objects_v2(Bucket=BUCKET_NAME, Prefix=prefix)
-    latest_key = max(objects["Contents"], key=lambda obj: obj["LastModified"])["Key"]
-    print(f"📂 Читаем файл: s3://{BUCKET_NAME}/{latest_key}")
+    response = s3_client.list_objects_v2(Bucket=BUCKET_NAME, Prefix=prefix)
 
-    s3_obj = s3_hook.get_key(key=latest_key, bucket_name=BUCKET_NAME)
+    if "Contents" not in response or not response["Contents"]:
+        return []
+
+    loaded = _get_loaded_files(table_name)
+
+    pending = []
+    for obj in response["Contents"]:
+        key = obj["Key"]
+        file_name = os.path.basename(key)
+        if file_name and file_name not in loaded:
+            pending.append((key, file_name, obj["LastModified"]))
+
+    pending.sort(key=lambda x: x[2])
+    return [(key, name) for key, name, _ in pending]
+
+
+def _read_parquet_by_key(key):
+    """Читает конкретный parquet-файл из S3 и возвращает (ParquetFile, file_name)."""
+    s3_hook = S3Hook(aws_conn_id=MINIO_CONN_ID)
+    file_name = os.path.basename(key)
+
+    print(f"📂 Читаем файл: s3://{BUCKET_NAME}/{key}")
+    s3_obj = s3_hook.get_key(key=key, bucket_name=BUCKET_NAME)
     buffer = io.BytesIO(s3_obj.get()["Body"].read())
-
-    file_name = os.path.basename(latest_key)
-    parquet_file = pq.ParquetFile(buffer)
-    return parquet_file, file_name
-
-
-def _is_already_loaded(table_name: str, file_name: str) -> bool:
-    """Проверяет, есть ли уже строки с этим source_file в таблице"""
-    pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-    result = pg_hook.get_first(
-        f"SELECT 1 FROM {SCHEMA_NAME}.{table_name} WHERE source_file = %s LIMIT 1",
-        parameters=(file_name,)
-    )
-    return result is not None
+    return pq.ParquetFile(buffer), file_name
 
 
 def _load_to_postgres(
@@ -63,10 +79,9 @@ def _load_to_postgres(
     dtype: dict,
     transform_fn=None,
     batch_size: int = 50_000,
-    ):
+):
     """
     Читает parquet батчами по batch_size строк и льёт в Postgres.
-    transform_fn — опциональная функция обработки столбцов: принимает df, возвращает df.
     """
     pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
     engine = pg_hook.get_sqlalchemy_engine()
@@ -84,14 +99,17 @@ def _load_to_postgres(
         df["source_file"] = file_name
         df["loaded_at"] = loaded_at
 
-        df.to_sql(
-            table_name,
-            con=engine,
-            schema=SCHEMA_NAME,
-            if_exists="append",
-            index=False,
-            dtype=dtype,
-        )
+        print("df.head(1):", df.head(1))
+
+        with engine.connect() as conn:
+            df.to_sql(
+                table_name,
+                con=conn,
+                schema=SCHEMA_NAME,
+                if_exists="append",
+                index=False,
+                dtype=dtype,
+            )
 
         total_rows += len(df)
         print(f"  📦 батч {i + 1}: загружено {len(df)} строк (итого {total_rows})")
@@ -100,109 +118,121 @@ def _load_to_postgres(
 
 
 def load_category(**context):
-    parquet_file, file_name = _read_latest_parquet("category")
+    pending = _get_pending_files("category")
 
-    if _is_already_loaded("category", file_name):
-        print(f"⏭️ category: файл '{file_name}' уже загружен, пропускаем")
+    if not pending:
+        print("⏭️ category: нет новых файлов для загрузки")
         return
 
-    def transform(df):
-        df['catalogid'] = df['catalogid'].astype(str)
-        df['catalogpath'] = df['catalogpath'].apply(lambda x: json.dumps(x.tolist(), ensure_ascii=False))
-        df['ids'] = df['ids'].apply(lambda x: x.tolist())
-        return df
+    for key, file_name in pending:
+        parquet_file, _ = _read_parquet_by_key(key)
 
-    _load_to_postgres(parquet_file, "category", file_name,
-        dtype={
-            "catalogid": Text,
-            "catalogpath": JSONB,
-            "ids": ARRAY(BIGINT),
-        },
-        transform_fn=transform,
-    )
+        def transform(df):
+            df['catalogid'] = df['catalogid'].astype(str)
+            df['catalogpath'] = df['catalogpath'].apply(lambda x: json.dumps(x.tolist(), ensure_ascii=False))
+            df['ids'] = df['ids'].apply(lambda x: x.tolist())
+            return df
+
+        _load_to_postgres(parquet_file, "category", file_name,
+            dtype={
+                "catalogid": Text,
+                "catalogpath": JSONB,
+                "ids": ARRAY(BIGINT),
+            },
+            transform_fn=transform,
+        )
 
 
 def load_items(**context):
-    parquet_file, file_name = _read_latest_parquet("items")
+    pending = _get_pending_files("items")
 
-    if _is_already_loaded("items", file_name):
-        print(f"⏭️ items: файл '{file_name}' уже загружен, пропускаем")
+    if not pending:
+        print("⏭️ items: нет новых файлов для загрузки")
         return
 
-    def transform(df):
-        df['attributes'] = df['attributes'].apply(lambda x: json.dumps(x.tolist(), ensure_ascii=False))
-        df['fclip_embed'] = df['fclip_embed'].apply(lambda x: x.tolist())
-        return df
+    for key, file_name in pending:
+        parquet_file, _ = _read_parquet_by_key(key)
 
-    _load_to_postgres(parquet_file, "items", file_name,
-        dtype={
-            "item_id": Text,
-            "itemname": Text,
-            "attributes": JSONB,
-            "fclip_embed": ARRAY(DOUBLE_PRECISION),
-            "catalogid": BIGINT,
-            "variant_id": BIGINT,
-            "model_id": BIGINT,
-        },
-        transform_fn=transform,
-    )
+        def transform(df):
+            df['attributes'] = df['attributes'].apply(lambda x: json.dumps(x.tolist(), ensure_ascii=False))
+            df['fclip_embed'] = df['fclip_embed'].apply(lambda x: x.tolist())
+            return df
+
+        _load_to_postgres(parquet_file, "items", file_name,
+            dtype={
+                "item_id": Text,
+                "itemname": Text,
+                "attributes": JSONB,
+                "fclip_embed": ARRAY(DOUBLE_PRECISION),
+                "catalogid": Text,
+                "variant_id": BIGINT,
+                "model_id": BIGINT,
+            },
+            transform_fn=transform,
+        )
 
 
 def load_orders(**context):
-    parquet_file, file_name = _read_latest_parquet("orders")
+    pending = _get_pending_files("orders")
 
-    if _is_already_loaded("orders", file_name):
-        print(f"⏭️ orders: файл '{file_name}' уже загружен, пропускаем")
+    if not pending:
+        print("⏭️ orders: нет новых файлов для загрузки")
         return
 
-    def transform(df):
-        # TODO: обработка столбцов
-        return df
+    for key, file_name in pending:
+        parquet_file, _ = _read_parquet_by_key(key)
 
-    _load_to_postgres(parquet_file, "orders", file_name,
-        dtype={
-            "order_id": Text,
-            "item_id": Text,
-            "user_id": BIGINT,
-            "created_timestamp": TIMESTAMP,
-            "last_status": Text,
-            "last_status_timestamp": TIMESTAMP,
-            "created_date": Date,
-        },
-        transform_fn=transform,
-    )
+        def transform(df):
+            # TODO: обработка столбцов при необходимости
+            return df
+
+        _load_to_postgres(parquet_file, "orders", file_name,
+            dtype={
+                "order_id": Text,
+                "item_id": Text,
+                "user_id": BIGINT,
+                "created_timestamp": TIMESTAMP,
+                "last_status": Text,
+                "last_status_timestamp": TIMESTAMP,
+                "created_date": Date,
+            },
+            transform_fn=transform,
+        )
 
 
 def load_tracker(**context):
-    parquet_file, file_name = _read_latest_parquet("tracker")
+    pending = _get_pending_files("tracker")
 
-    if _is_already_loaded("tracker", file_name):
-        print(f"⏭️ tracker: файл '{file_name}' уже загружен, пропускаем")
+    if not pending:
+        print("⏭️ tracker: нет новых файлов для загрузки")
         return
 
-    def transform(df):
-        # TODO: обработка столбцов
-        return df
+    for key, file_name in pending:
+        parquet_file, _ = _read_parquet_by_key(key)
 
-    _load_to_postgres(parquet_file, "tracker", file_name,
-        dtype={
-            "event_id": Text,
-            "item_id": BIGINT,
-            "user_id": BIGINT,
-            "timestamp": TIMESTAMP,
-            "action_type": Text,
-            "action_widget": Text,
-            "date": Date,
-        },
-        transform_fn=transform,
-    )
+        def transform(df):
+            # TODO: обработка столбцов при необходимости
+            return df
+
+        _load_to_postgres(parquet_file, "tracker", file_name,
+            dtype={
+                "event_id": Text,
+                "item_id": Text,
+                "user_id": BIGINT,
+                "timestamp": TIMESTAMP,
+                "action_type": Text,
+                "action_widget": Text,
+                "date": Date,
+            },
+            transform_fn=transform,
+        )
 
 
 with DAG(
     dag_id="data_ingestion_pipeline",
     default_args=default_args,
     catchup=False,
-    tags=["recsys", "etl"],
+    tags=["etl"],
 ) as dag:
 
     load_category_task = PythonOperator(

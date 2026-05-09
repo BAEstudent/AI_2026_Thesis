@@ -1,18 +1,28 @@
-FROM apache/airflow:2.10.3-python3.12
+FROM apache/airflow:3.2.1-python3.12 AS builder
 
 USER root
-
-ADD https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz /tmp/uv.tar.gz
-RUN tar -xzf /tmp/uv.tar.gz -C /usr/local/bin/ --strip-components=1 uv-x86_64-unknown-linux-gnu/uv && \
-    rm /tmp/uv.tar.gz && \
-    chmod +x /usr/local/bin/uv
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 USER airflow
+RUN pip install --no-cache-dir uv
 
-COPY ./pyproject.toml ./uv.lock* ./
+WORKDIR /opt/airflow
 
-RUN uv export --format requirements-txt > requirements.txt
+ENV UV_PROJECT_ENVIRONMENT="/opt/airflow/.venv-custom"
+ENV UV_NO_CACHE=1
 
-RUN uv pip install -r requirements.txt
+COPY --chown=airflow:airflow ./pyproject.toml ./uv.lock ./
+RUN uv sync --frozen --only-group airflow --no-compile
 
-RUN rm -rf /home/airflow/.cache/uv
+FROM apache/airflow:3.2.1-python3.12
+
+USER airflow
+WORKDIR /opt/airflow
+
+COPY --from=builder --chown=airflow:airflow /opt/airflow/.venv-custom /opt/airflow/.venv-custom
+
+ENV PATH="/opt/airflow/.venv-custom/bin:$PATH"
+
+COPY --chown=airflow:airflow ./dags /opt/airflow/dags
+COPY --chown=airflow:airflow ./plugins /opt/airflow/plugins

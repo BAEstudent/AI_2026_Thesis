@@ -3,17 +3,19 @@ x-airflow-common:
   build: 
     context: .
     dockerfile: airflow/Dockerfile
+  image: ai_2026_thesis-airflow:latest
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_POSTGRES_USER}:${AIRFLOW_POSTGRES_PASSWORD}@postgres:5432/airflow
     AIRFLOW_CONN_SELLER_CONN: '{"conn_type": "postgres", "host": "postgres", "login": "${POSTGRES_USER}", "password": "${POSTGRES_PASSWORD}", "port": 5432, "schema": "seller"}'
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+    AIRFLOW__CORE__SECRET_KEY: ${AIRFLOW__CORE__SECRET_KEY}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql+psycopg2://${AIRFLOW_POSTGRES_USER}:${AIRFLOW_POSTGRES_PASSWORD}@postgres:5432/airflow
-    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-webserver:8080/execution/
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-airflow_jwt_secret}
     AIRFLOW__API_AUTH__JWT_ISSUER: ${AIRFLOW__API_AUTH__JWT_ISSUER:-airflow}
     AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: 30
@@ -25,11 +27,13 @@ x-airflow-common:
     DATA_BUCKET_NAME: "data"
     SELLER_SCHEMA: "seller"
     AIRFLOW_CONN_CLICKHOUSE_CONN: '{"conn_type": "clickhouse", "host": "clickhouse", "port": 9000, "login": "${CLICKHOUSE_USER}", "password": "${CLICKHOUSE_PASSWORD}", "schema": "analytics"}'
+    AIRFLOW__SCHEDULER__STANDALONE_DAG_PROCESSOR: 'true'
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
     - ./airflow/plugins:/opt/airflow/plugins
   user: "${AIRFLOW_UID:-50000}:0"
+  profiles: ["airflow"]
   depends_on:
     &airflow-common-depends-on
     postgres:
@@ -57,6 +61,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    profiles: ["db"]
 
   clickhouse:
     image: clickhouse/clickhouse-server:latest
@@ -75,11 +80,18 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     ulimits:
       nofile:
         soft: 262144
         hard: 262144
     restart: unless-stopped
+    profiles: ["db"]
 
   minio:
     image: minio/minio:latest
@@ -99,6 +111,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    profiles: ["db"]
 
   redis:
     image: redis:7
@@ -111,21 +124,25 @@ services:
       retries: 50
       start_period: 30s
     restart: always
+    profiles: ["db"]
 
-  airflow-api-server:
+  airflow-webserver:
     <<: *airflow-common
     command: api-server
     ports:
       - "8080:8080"
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 30s
-    restart: always
+    restart: on-failure
     depends_on:
-      <<: *airflow-common-depends-on
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
 
@@ -138,9 +155,12 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
-    restart: always
+    restart: on-failure
     depends_on:
-      <<: *airflow-common-depends-on
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
   
@@ -153,15 +173,18 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
-    restart: always
+    restart: on-failure
     depends_on:
-      <<: *airflow-common-depends-on
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
 
   airflow-worker:
     <<: *airflow-common
-    command: celery worker
+    command: airflow celery worker
     healthcheck:
       test:
         - "CMD-SHELL"
@@ -209,11 +232,71 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
-    restart: always
+    restart: on-failure
     depends_on:
-      <<: *airflow-common-depends-on
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
+  
+  # api:
+  #   build: 
+  #     context: .
+  #     dockerfile: ./app/Dockerfile
+  #   container_name: nlq-to-sql-api
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   environment:
+  #     - CLICKHOUSE_HOST=clickhouse
+  #     - CLICKHOUSE_PORT=8123
+  #     - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+  #     - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+  #     - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+  #     - MODELS_PATH=/app/services/models
+  #     - LAMBDA_COEF=0.8
+  #     - TAU_THRESHOLD=0.6
+  #   volumes:
+  #     - ./app:/app/app
+  #     - ./models:/app/services/models
+  #   ports:
+  #     - "8000:8000"
+  #   depends_on:
+  #     clickhouse:
+  #       condition: service_healthy
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 40s
+
+  anomaly_detection:
+    build: 
+      context: .
+      dockerfile: ./services/anomaly_detection/Dockerfile
+    container_name: anomaly_detection_service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+    ports:
+      - "8001:8001"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    profiles: ["service"]
 
 volumes:
   postgres_data:
