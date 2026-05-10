@@ -104,9 +104,40 @@ CREATE TABLE IF NOT EXISTS analytics.category (
     catalogid    String,
     catalogpath  String,
     ids          Array(Int64),
+    category_level1 String,
     source_file  String,
     loaded_at    DateTime
 )
 ENGINE = ReplacingMergeTree(loaded_at)
 ORDER BY (catalogid);
 
+
+CREATE TABLE IF NOT EXISTS analytics.forecasts
+(
+    granularity  LowCardinality(String),
+    freq         LowCardinality(String),
+    series_id    String,
+    model        LowCardinality(String),
+    ds           Date,
+    yhat         Float64,
+    computed_at  DateTime
+)
+ENGINE = ReplacingMergeTree(computed_at)
+ORDER BY (granularity, freq, series_id, model, ds);
+ 
+ 
+CREATE TABLE IF NOT EXISTS analytics.forecast_metrics
+(
+    granularity  LowCardinality(String),
+    freq         LowCardinality(String),
+    series_id    String,
+    model        LowCardinality(String),
+    MAE          Float64,
+    RMSE         Float64,
+    MAPE         Float64,
+    SMAPE        Float64,
+    train_size   UInt32,
+    computed_at  DateTime
+)
+ENGINE = ReplacingMergeTree(computed_at)
+ORDER BY (granularity, freq, series_id, model);

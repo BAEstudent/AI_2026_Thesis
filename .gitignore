@@ -136,6 +136,7 @@ celerybeat.pid
 
 # Environments
 .env
+*.env
 .envrc
 .venv
 env/
@@ -222,3 +223,11 @@ models/
 
 # Notebooks
 *.ipynb
+
+# csv
+*.csv
+.csv
+
+# images
+.png
+*.png

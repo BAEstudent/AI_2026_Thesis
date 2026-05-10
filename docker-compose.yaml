@@ -28,16 +28,18 @@ x-airflow-common:
     SELLER_SCHEMA: "seller"
     AIRFLOW_CONN_CLICKHOUSE_CONN: '{"conn_type": "clickhouse", "host": "clickhouse", "port": 9000, "login": "${CLICKHOUSE_USER}", "password": "${CLICKHOUSE_PASSWORD}", "schema": "analytics"}'
     AIRFLOW__SCHEDULER__STANDALONE_DAG_PROCESSOR: 'true'
+  env_file:
+      - airflow/airflow.env
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
     - ./airflow/plugins:/opt/airflow/plugins
   user: "${AIRFLOW_UID:-50000}:0"
   profiles: ["airflow"]
-  depends_on:
-    &airflow-common-depends-on
-    postgres:
-      condition: service_healthy
+  # depends_on:
+    # &airflow-common-depends-on
+    # postgres:
+      # condition: service_healthy
 
 
 services:
@@ -139,10 +141,10 @@ services:
       start_period: 30s
     restart: on-failure
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      # postgres:
+      #   condition: service_healthy
+      # redis:
+      #   condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
 
@@ -157,10 +159,10 @@ services:
       start_period: 30s
     restart: on-failure
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      # postgres:
+      #   condition: service_healthy
+      # redis:
+      #   condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
   
@@ -175,10 +177,10 @@ services:
       start_period: 30s
     restart: on-failure
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      # postgres:
+      #   condition: service_healthy
+      # redis:
+      #   condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
 
@@ -197,12 +199,12 @@ services:
       <<: *airflow-common-env
       DUMB_INIT_SETSID: "0"
     restart: unless-stopped
-    depends_on:
-      <<: *airflow-common-depends-on
-      airflow-init:
-        condition: service_completed_successfully
-      redis:
-        condition: service_healthy
+    # depends_on:
+    #   <<: *airflow-common-depends-on
+      # airflow-init:
+      #   condition: service_completed_successfully
+      # redis:
+      #   condition: service_healthy
 
   airflow-init:
     <<: *airflow-common
@@ -234,69 +236,52 @@ services:
       start_period: 30s
     restart: on-failure
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    #   postgres:
+    #     condition: service_healthy
+    #   redis:
+    #     condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
-  
-  # api:
-  #   build: 
-  #     context: .
-  #     dockerfile: ./app/Dockerfile
-  #   container_name: nlq-to-sql-api
-  #   restart: unless-stopped
-  #   env_file: .env
-  #   environment:
-  #     - CLICKHOUSE_HOST=clickhouse
-  #     - CLICKHOUSE_PORT=8123
-  #     - CLICKHOUSE_USER=${CLICKHOUSE_USER}
-  #     - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
-  #     - CLICKHOUSE_DB=${CLICKHOUSE_DB}
-  #     - MODELS_PATH=/app/services/models
-  #     - LAMBDA_COEF=0.8
-  #     - TAU_THRESHOLD=0.6
-  #   volumes:
-  #     - ./app:/app/app
-  #     - ./models:/app/services/models
-  #   ports:
-  #     - "8000:8000"
-  #   depends_on:
-  #     clickhouse:
-  #       condition: service_healthy
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 3
-  #     start_period: 40s
 
-  anomaly_detection:
-    build: 
+  forecasting:
+    build:
       context: .
-      dockerfile: ./services/anomaly_detection/Dockerfile
-    container_name: anomaly_detection_service
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      - CLICKHOUSE_HOST=clickhouse
-      - CLICKHOUSE_PORT=8123
-      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
-      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
-      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      dockerfile: ./services/forecasting/Dockerfile
     ports:
       - "8001:8001"
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+    environment:
+      CLICKHOUSE_HOST: ${CLICKHOUSE_HOST}
+      CLICKHOUSE_HTTP_PORT: ${CLICKHOUSE_HTTP_PORT}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+    # depends_on: ["db"]
+    restart: unless-stopped
     profiles: ["service"]
+  
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: ./services/telegram_bot/Dockerfile
+    container_name: telegram-bot
+    # dns:
+    #   - 8.8.8.8
+    #   - 1.1.1.1
+    network_mode: host
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      FORECAST_API_URL: http://forecasting:8001
+      CLICKHOUSE_HOST: ${CLICKHOUSE_HOST}
+      CLICKHOUSE_HTTP_PORT: ${CLICKHOUSE_HTTP_PORT}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      # HTTPS_PROXY: http://127.0.0.1:10808
+    # depends_on:
+    #   - forecasting
+    #   - clickhouse
+    restart: unless-stopped
+    # profiles: ["service"]
 
 volumes:
   postgres_data:

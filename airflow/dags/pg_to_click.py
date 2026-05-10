@@ -92,7 +92,6 @@ def sync_items(**context):
             item_id,
             itemname,
             attributes::text    AS attributes,
-            fclip_embed::text   AS fclip_embed,
             catalogid,
             variant_id,
             model_id,
@@ -101,19 +100,49 @@ def sync_items(**context):
         FROM {SCHEMA_NAME}.items
     """
 
+    BATCH_SIZE = 100_000
+    total_rows = 0
+
     pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-    df = pg_hook.get_pandas_df(query)
 
-    df["fclip_embed"] = df["fclip_embed"].apply(
-        lambda x: [float(v) for v in x.strip("{}").split(",")] if x else []
-    )
-    df["attributes"] = df["attributes"].fillna("{}")
-    df["catalogid"] = df["catalogid"].fillna("").astype(str)
-    df["variant_id"] = df["variant_id"].fillna(0).astype("int64")
-    df["model_id"] = df["model_id"].fillna(0).astype("int64")
+    with pg_hook.get_conn() as conn:
+        with conn.cursor(name="items_cursor") as cursor:
+            cursor.itersize = BATCH_SIZE
+            cursor.execute(query)
+            columns = None
 
-    _insert_df_to_ch(df, "items")
-    print(f"✅ items: перелито {len(df)} строк")
+            while True:
+                rows = cursor.fetchmany(BATCH_SIZE)
+                if not rows:
+                    break
+
+                if columns is None:
+                    columns = [desc[0] for desc in cursor.description]
+
+                df = pd.DataFrame(rows, columns=columns)
+
+                df["attributes"] = df["attributes"].fillna("{}").astype(str)
+                
+                df["catalogid"] = pd.to_numeric(df["catalogid"], errors="coerce").fillna(0).astype("int64")
+                
+                df["variant_id"] = df["variant_id"].fillna(0).astype("int64")
+                df["model_id"] = df["model_id"].fillna(0).astype("int64")
+                df["id"] = df["id"].astype("int64")
+                df["item_id"] = df["item_id"].astype(str)
+                df["itemname"] = df["itemname"].astype(str)
+                df["source_file"] = df["source_file"].astype(str)
+                df["loaded_at"] = pd.to_datetime(df["loaded_at"])
+
+                df = df[[
+                    "id", "item_id", "itemname", "attributes",
+                    "catalogid", "variant_id", "model_id", "source_file", "loaded_at"
+                ]]
+
+                _insert_df_to_ch(df, "items")
+                total_rows += len(df)
+                print(f"  ↳ вставлено {total_rows} строк...")
+
+    print(f"✅ items: перелито {total_rows} строк")
 
 
 def sync_order_facts(**context):
@@ -413,24 +442,20 @@ def sync_category(**context):
     pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
     df = pg_hook.get_pandas_df(query)
 
-    # Convert PG array string (e.g. '{1,2,3}') to a list of ints
     def parse_pg_array(array_str):
         if pd.isna(array_str) or array_str is None:
             return []
-        # Remove curly braces and split by comma
         cleaned = array_str.strip('{}')
         if cleaned == '':
             return []
         return [int(x) for x in cleaned.split(',')]
 
     df["ids"] = df["ids"].apply(parse_pg_array)
-    # catalogpath is already a string (from ::text), keep as is
-    df["catalogpath"] = df["catalogpath"].fillna("{}")
+    df["catalogpath"] = df["catalogpath"].apply(lambda x: ast.literal_eval(x))
+    df["category_level1"] = df["catalogpath"].apply(lambda x: ast.literal_eval(x)[-2]["name"])
     df["catalogid"] = df["catalogid"].fillna("").astype(str)
 
-    # Insert into ClickHouse – ensure CH table has columns in this order:
-    # catalogid, catalogpath, ids, source_file, loaded_at
-    _insert_df_to_ch(df, "category")
+    _insert_df_to_ch(df[['catalogid', 'catalogpath', 'ids', 'category_level1', 'source_file', 'loaded_at']], "category")
     print(f"✅ category: перелито {len(df)} строк")
 
 
