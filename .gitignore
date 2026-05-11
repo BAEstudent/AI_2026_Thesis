@@ -223,6 +223,8 @@ models/
 
 # Notebooks
 *.ipynb
+notebooks/*.py
+notebooks/*.html
 
 # csv
 *.csv
@@ -231,3 +233,6 @@ models/
 # images
 .png
 *.png
+
+# Model
+trisql_models

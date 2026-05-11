@@ -5,15 +5,20 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12, <3.13"
 dependencies = [
+    "accelerate>=1.13.0",
     "apache-airflow[celery]>=3.2.1",
+    "bitsandbytes>=0.49.2",
     "boto3>=1.43.5",
     "clickhouse-connect>=0.15.1",
     "config>=0.5.1",
+    "datasets>=4.8.5",
     "fastapi>=0.136.1",
     "ipykernel>=7.2.0",
+    "ipywidgets>=8.1.8",
     "matplotlib>=3.10.9",
     "numpy>=2.4.3",
     "pandas==2.2.3",
+    "peft>=0.19.1",
     "prophet>=1.3.0",
     "psycopg2-binary>=2.9.12",
     "pyarrow>=23.0.1",
@@ -24,6 +29,7 @@ dependencies = [
     "seaborn>=0.13.2",
     "sentence-transformers>=5.3.0",
     "sqlalchemy>2.0.0",
+    "sqlglot>=30.7.0",
     "statsforecast>=2.0.3",
     "torch>=2.11.0",
     "tqdm>=4.67.3",
@@ -58,11 +64,19 @@ anomaly_detection = [
     "uvicorn>=0.42.0",
 ]
 text_to_sql = [
+    "accelerate>=1.13.0",
+    "bitsandbytes>=0.49.2",
+    "clickhouse-connect>=0.15.1",
+    "datasets>=4.8.5",
     "fastapi>=0.136.1",
     "numpy>=2.4.3",
+    "peft>=0.19.1",
     "pydantic>=2.12.5",
     "scikit-learn>=1.8.0",
+    "sentence-transformers>=5.4.1",
+    "sqlglot>=30.7.0",
     "tqdm>=4.67.3",
+    "transformers>=5.7.0",
     "uvicorn>=0.42.0",
 ]
 forecasting = [

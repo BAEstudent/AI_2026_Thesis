@@ -259,29 +259,47 @@ services:
     restart: unless-stopped
     profiles: ["service"]
   
-  telegram-bot:
+  # telegram-bot:
+  #   build:
+  #     context: .
+  #     dockerfile: ./services/telegram_bot/Dockerfile
+  #   container_name: telegram-bot
+  #   # dns:
+  #   #   - 8.8.8.8
+  #   #   - 1.1.1.1
+  #   network_mode: host
+  #   environment:
+  #     TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+  #     FORECAST_API_URL: http://forecasting:8001
+  #     CLICKHOUSE_HOST: ${CLICKHOUSE_HOST}
+  #     CLICKHOUSE_HTTP_PORT: ${CLICKHOUSE_HTTP_PORT}
+  #     CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+  #     CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+  #     CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+  #     # HTTPS_PROXY: http://127.0.0.1:10808
+  #   # depends_on:
+  #   #   - forecasting
+  #   #   - clickhouse
+  #   restart: unless-stopped
+  #   # profiles: ["service"]
+
+  text-to-sql:
     build:
       context: .
-      dockerfile: ./services/telegram_bot/Dockerfile
-    container_name: telegram-bot
-    # dns:
-    #   - 8.8.8.8
-    #   - 1.1.1.1
-    network_mode: host
+      dockerfile: ./services/text_to_sql/Dockerfile
+    ports:
+      - "8002:8002"
     environment:
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      FORECAST_API_URL: http://forecasting:8001
       CLICKHOUSE_HOST: ${CLICKHOUSE_HOST}
       CLICKHOUSE_HTTP_PORT: ${CLICKHOUSE_HTTP_PORT}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       CLICKHOUSE_DB: ${CLICKHOUSE_DB}
-      # HTTPS_PROXY: http://127.0.0.1:10808
-    # depends_on:
-    #   - forecasting
-    #   - clickhouse
+      MODEL_DIR: /app/models
+    volumes:
+      - ./trisql_models:/app/models
     restart: unless-stopped
-    # profiles: ["service"]
+    profiles: ["service"]
 
 volumes:
   postgres_data:

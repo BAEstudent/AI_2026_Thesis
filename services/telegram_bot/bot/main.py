@@ -27,6 +27,7 @@ from bot.handlers.forecasts import (
 from bot.handlers.display import display_callback
 from bot.handlers.refresh import refresh_callback
 from bot.handlers.metrics import metrics_callback
+from bot.handlers.text2sql import text2sql_message_handler
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -61,6 +62,14 @@ def _build_app() -> Application:
 
     # Item selection from search results
     app.add_handler(CallbackQueryHandler(item_select_callback, pattern=r"^fc:item:select:"))
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            text2sql_message_handler,
+        ),
+        group=0,
+    )
 
     # Item actions: view, metrics, refresh
     app.add_handler(CallbackQueryHandler(display_callback, pattern=r"^fc:disp:"))

@@ -13,8 +13,12 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str
 
     # Forecast API (FastAPI service)
-    FORECAST_API_URL: str = "http://forecasting:8001"
+    FORECAST_API_URL: str = "http://localhost:8001"
     FORECAST_API_TIMEOUT: int = 60
+
+    # Text‑to‑SQL service
+    TEXT2SQL_API_URL: str = "http://localhost:8002"
+    TEXT2SQL_API_TIMEOUT: int = 30
 
     # ClickHouse (for direct lookups / search)
     CLICKHOUSE_HOST: str = "clickhouse"

@@ -74,3 +74,17 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             parse_mode="Markdown",
             reply_markup=main_menu(),
         )
+    elif data == "menu:text2sql":
+        # Set a flag so the next text message is treated as a question
+        context.user_data["text2sql_mode"] = True
+        await query.edit_message_text(
+            "💬 *Ask Data*\n\n"
+            "Type your question in plain English.\n"
+            "Examples:\n"
+            "• _\"How many orders were placed yesterday?\"_\n"
+            "• _\"Show top 5 selling items this month\"_\n"
+            "• _\"What is the average price per category?\"_\n\n"
+            "Send your question now.",
+            parse_mode="Markdown",
+            reply_markup=main_menu(),  # user can still go back
+        )
