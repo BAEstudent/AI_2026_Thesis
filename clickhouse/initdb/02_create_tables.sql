@@ -141,3 +141,23 @@ CREATE TABLE IF NOT EXISTS analytics.forecast_metrics
 )
 ENGINE = ReplacingMergeTree(computed_at)
 ORDER BY (granularity, freq, series_id, model);
+
+
+-- Таблица аномалий
+CREATE TABLE IF NOT EXISTS analytics.anomalies
+(
+    date          Date,
+    metric        LowCardinality(String),   -- orders_cnt, views_cnt
+    granularity   LowCardinality(String),   -- item, category, global
+    series_id     String,                   -- item_id, category_level1, 'global'
+    value         Float64,                  -- фактическое значение
+    avg_30d       Float64,                  -- среднее за 30 дней
+    std_30d       Float64,                  -- std за 30 дней
+    z_score       Float64,                  -- (value - avg) / std
+    threshold     Float64,                  -- порог срабатывания (например, 2.0)
+    detected_at   DateTime DEFAULT now()
+)
+ENGINE = MergeTree()
+PARTITION BY toYYYYMM(date)
+ORDER BY (granularity, metric, series_id, date)
+SETTINGS index_granularity = 8192;

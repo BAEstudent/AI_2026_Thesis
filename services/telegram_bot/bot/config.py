@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     # Telegram
     TELEGRAM_BOT_TOKEN: str
+    TELEGRAM_PROXY: str | None = None
 
     # Forecast API (FastAPI service)
     FORECAST_API_URL: str = "http://localhost:8001"

@@ -37,11 +37,13 @@ logger = logging.getLogger(__name__)
 
 
 def _build_app() -> Application:
-    app: Application = (
-        ApplicationBuilder()
-        .token(settings.TELEGRAM_BOT_TOKEN)
-        .build()
-    )
+    builder = ApplicationBuilder().token(settings.TELEGRAM_BOT_TOKEN)
+
+    if settings.TELEGRAM_PROXY:
+        builder.proxy(settings.TELEGRAM_PROXY)
+        logger.info(f"Using proxy: {settings.TELEGRAM_PROXY}")
+
+    app: Application = builder.build()
 
     # ── Commands ──────────────────────────────────────────────────────────
     app.add_handler(CommandHandler("start", start_command))

@@ -236,3 +236,10 @@ notebooks/*.html
 
 # Model
 trisql_models
+
+# Thesis text
+thesis_text/
+
+install-tl-20260512
+..bbl
+..blg

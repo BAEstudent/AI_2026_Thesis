@@ -1,5 +1,5 @@
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional
 import torch
 import torch.nn as nn
 from transformers import AutoModel, AutoTokenizer, T5ForConditionalGeneration
@@ -90,7 +90,7 @@ class TriSQLInference:
         ).to(self.device)
         self.generator.eval()
 
-        # Classifier (optional, not used in final SQL)
+        # Classifier
         self.classifier_bert = AutoModel.from_pretrained(
             os.path.join(model_dir, "classifier", "bert")
         ).to(self.device)
@@ -108,6 +108,9 @@ class TriSQLInference:
 
         self.tau = 0.6
         self.lambda_coef = 0.8
+
+        # Optional: DB executor for real execution checks (set externally)
+        self.db_executor = None
 
     def _select_schema(self, question, schema):
         with torch.no_grad():
@@ -160,9 +163,161 @@ class TriSQLInference:
             )
         return self.generator_tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-    def predict(self, question: str, schema: Dict[str, List[str]]) -> Dict:
+    # ------------------------- Refinement methods -------------------------
+    def _classify_complexity(self, question: str, sql: str, schema_text: str) -> str:
+        input_text = f"question: {question} sql: {sql} schema: {schema_text}"
+        enc = self.classifier_tokenizer(
+            input_text,
+            truncation=True,
+            padding="max_length",
+            max_length=512,
+            return_tensors="pt",
+        )
+        input_ids = enc["input_ids"].to(self.device)
+        attention_mask = enc["attention_mask"].to(self.device)
+
+        with torch.no_grad():
+            logits = self.classifier(input_ids, attention_mask)
+        pred = torch.argmax(logits, dim=1).item()
+        levels = ["low", "medium", "high"]
+        return levels[pred]
+
+    def _refine_low(self, question: str, sql: str, schema_text: str) -> str:
+        prompt = (
+            f"Correct minor syntax issues in this SQL query while keeping the logic exactly the same.\n"
+            f"Question: {question}\n"
+            f"Schema: {schema_text}\n"
+            f"SQL: {sql}\n"
+            f"Corrected SQL:"
+        )
+        return self._run_generator(prompt)
+
+    def _refine_medium(self, question: str, sql: str, schema_text: str) -> str:
+        prompt = (
+            f"Improve the structure of this SQL query so that it follows best practices "
+            f"(explicit JOINs, proper GROUP BY, consistent clauses) while accurately answering the question.\n"
+            f"Question: {question}\n"
+            f"Schema: {schema_text}\n"
+            f"Original SQL: {sql}\n"
+            f"Refined SQL:"
+        )
+        return self._run_generator(prompt)
+
+    def _refine_high(self, question: str, sql: str, schema_text: str) -> str:
+        prompt = (
+            f"You are an expert SQL developer. The query below may contain semantic errors or be non‑executable.\n"
+            f"Reason step‑by‑step about the question and the schema, then rewrite the SQL to be correct and efficient.\n"
+            f"Question: {question}\n"
+            f"Schema: {schema_text}\n"
+            f"Current SQL: {sql}\n"
+            f"Your analysis and final SQL:"
+        )
+        return self._run_generator(prompt, max_new_tokens=384)
+
+    def _run_generator(self, prompt: str, max_new_tokens: int = 256) -> str:
+        inputs = self.generator_tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=512
+        ).to(self.device)
+        with torch.no_grad():
+            outputs = self.generator.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                num_beams=1,
+                do_sample=False,
+            )
+        return self.generator_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+
+    def _execution_check(self, sql: str) -> bool:
+        if self.db_executor:
+            try:
+                self.db_executor(sql)
+                return True
+            except Exception:
+                return False
+        return True  # placeholder: assume executable
+
+    def _quality_score(self, sql: str, question: str) -> float:
+        score = 0
+        sql_upper = sql.upper()
+        required_keywords = ["SELECT", "FROM"]
+        if all(kw in sql_upper for kw in required_keywords):
+            score += 50
+        if "JOIN" in sql_upper or "WHERE" in sql_upper:
+            score += 30
+        if 10 < len(sql) < 500:
+            score += 20
+        return min(score, 100)
+
+    def _refine_with_fallback(self, question: str, initial_sql: str,
+                              schema_text: str, complexity: str) -> Dict:
+        refiner_map = {
+            "low": self._refine_low,
+            "medium": self._refine_medium,
+            "high": self._refine_high,
+        }
+        refined_sql = refiner_map[complexity](question, initial_sql, schema_text)
+
+        init_exec = self._execution_check(initial_sql)
+        ref_exec  = self._execution_check(refined_sql)
+
+        if ref_exec and not init_exec:
+            return {"sql": refined_sql, "fallback": "refined_only_exec"}
+        elif init_exec and not ref_exec:
+            return {"sql": initial_sql, "fallback": "kept_initial"}
+        elif init_exec and ref_exec:
+            q_init = self._quality_score(initial_sql, question)
+            q_ref  = self._quality_score(refined_sql, question)
+            winner = refined_sql if q_ref > q_init else initial_sql
+            return {"sql": winner, "fallback": "quality_comparison"}
+        else:
+            if complexity != "high":
+                escalated = "medium" if complexity == "low" else "high"
+                return self._refine_with_fallback(question, initial_sql, schema_text, escalated)
+            else:
+                return {"sql": initial_sql, "fallback": "max_escalation_default"}
+
+    # ------------------------- Main predict with logging -------------------------
+    def predict(self, question: str, schema: Dict[str, List[str]], verbose: bool = True) -> Dict:
+        """Full pipeline with optional verbose logging."""
+        if verbose:
+            print("\n" + "=" * 60)
+            print(f"Question: {question}")
+            print(f"Schema: {self._format_schema(schema)}")
+
+        # Stage 1: Schema selection
         filtered_schema = self._select_schema(question, schema)
         schema_text = self._format_schema(filtered_schema)
+        if verbose:
+            print(f"[Stage 1] Filtered schema: {schema_text}")
+
+        # Stage 2: Skeleton generation
         skeleton = self._generate_skeleton(question, schema_text)
-        sql = self._generate_sql(question, skeleton, schema_text)
-        return {"sql": sql, "selected_schema": filtered_schema, "skeleton": skeleton}
+        if verbose:
+            print(f"[Stage 2] Skeleton: {skeleton}")
+
+        # Stage 3: Initial SQL
+        initial_sql = self._generate_sql(question, skeleton, schema_text)
+        if verbose:
+            print(f"[Stage 3] Initial SQL: {initial_sql}")
+
+        # Stage 4: Complexity classification
+        complexity = self._classify_complexity(question, initial_sql, schema_text)
+        if verbose:
+            print(f"[Stage 4] Complexity: {complexity}")
+
+        # Stage 5: Refinement with fallback
+        refined_result = self._refine_with_fallback(
+            question, initial_sql, schema_text, complexity
+        )
+        if verbose:
+            print(f"[Stage 5] Refined SQL: {refined_result['sql']}")
+            print(f"[Stage 5] Fallback decision: {refined_result['fallback']}")
+            print("=" * 60 + "\n")
+
+        return {
+            "sql": refined_result["sql"],
+            "selected_schema": filtered_schema,
+            "skeleton": skeleton,
+            "complexity": complexity,
+            "fallback": refined_result["fallback"],
+        }
