@@ -136,6 +136,7 @@ celerybeat.pid
 
 # Environments
 .env
+*.env
 .envrc
 .venv
 env/
@@ -205,3 +206,40 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Data
+data/
+
+# Airflow
+logs/
+
+# Postgres
+postgres_data/
+
+# Minio
+minio_data/
+
+models/
+
+# Notebooks
+*.ipynb
+notebooks/*.py
+notebooks/*.html
+
+# csv
+*.csv
+.csv
+
+# images
+.png
+*.png
+
+# Model
+trisql_models
+
+# Thesis text
+thesis_text/
+
+install-tl-20260512
+..bbl
+..blg
